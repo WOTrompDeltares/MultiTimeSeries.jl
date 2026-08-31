@@ -1,13 +1,13 @@
 # series_netcdf.jl
 
 using Dates
-using NetCDF
+using NCDatasets
 const NAME_LEN_MAX = 256
 
 # Define values structure for NetCDF time series
 # use lazy loading for the values
 struct NetCDFTimeSeries <: AbstractTimeSeries
-    nc::NcFile
+    nc::NCDataset
     filename::String
     quantity::String
     source::String
@@ -28,7 +28,7 @@ function NetCDFTimeSeries(filename::String, quantity::String, source::String="")
     end
     nc = nothing
     try
-        nc = NetCDF.open(filename)
+        nc = NCDataset(filename)
     catch e
         error("Failed to open NetCDF file $(filename): $(e)")
     end
@@ -43,31 +43,23 @@ end
 #
 
 function get_values(ts::NetCDFTimeSeries)
-    return ts.nc[ts.quantity][:,:] # Read the values now for all stations and times
+    # Throws an error if any missing values
+    return NCDatasets.nomissing(ts.nc[ts.quantity][:,:]) # Read the values now for all stations and times
 end
     
 function get_times(ts::NetCDFTimeSeries)
-    # For unit conversion for times
-    time_units=Dict("seconds"=>Second(1), "minutes"=>Minute(1), "hours"=>Hour(1), "days"=>Day(1))
-    # Read the time variable
-    raw_times = ts.nc["time"][:]
-    time_reference = ts.nc["time"].atts["units"] # looks like "seconds since 1991-01-01 00:00:00"
-    # split at word since
-    time_reference_parts = split(time_reference, "since")
-    if length(time_reference_parts) != 2
-        error("Time reference format is not recognized: $(time_reference). Should be like 'seconds since 1991-01-01 00:00:00'")
-    end
-    time_reference_date = DateTime(strip(time_reference_parts[2]), dateformat"yyyy-mm-dd HH:MM:SS")
-    time_unit=time_units[strip(time_reference_parts[1])]
-    times = time_reference_date .+ raw_times .* time_unit
-    return times
+    return ts.nc["time"][:]
 end
 
 function get_names(ts::NetCDFTimeSeries)
     possible_names = ["station_id", "station_name"]
     for name in possible_names
         if name in keys(ts.nc)
-            return nc_char2string(ts.nc[name][:,:])
+            if ndims(ts.nc[name]) == 2
+                return replace.(String.(eachcol(ts.nc[name])), "\0"=>"") # Convert to array of strings
+            else
+                return ts.nc[name] # Convert to array of strings
+            end
         end
     end
     error("No station name variable found in the NetCDF file. Expected one of: $(possible_names)")
