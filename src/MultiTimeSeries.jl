@@ -3,7 +3,6 @@ module MultiTimeSeries
 # ── dependencies ──────────────────────────────────────────────────────────────
 using Dates
 using Printf
-using NetCDF
 using JLD2
 using Rasters, ZarrDatasets, NCDatasets
 using Minio, AWS

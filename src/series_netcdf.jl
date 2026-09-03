@@ -56,9 +56,11 @@ function get_names(ts::NetCDFTimeSeries)
     for name in possible_names
         if name in keys(ts.nc)
             if ndims(ts.nc[name]) == 2
+                # This implicitly loads data
                 return replace.(String.(eachcol(ts.nc[name])), "\0"=>"") # Convert to array of strings
             else
-                return ts.nc[name] # Convert to array of strings
+                # need to explicitly load data here
+                return ts.nc[name][:] # Convert to array of strings
             end
         end
     end
@@ -148,73 +150,90 @@ end
 #
 # test_netcdf_writer
 #
-standard_names=Dict("waterlevel" => "sea_surface_height")
-long_names=Dict("waterlevel" => "Sea level above geoid or Sea level above mean-sea-level")
-units_dict=Dict("waterlevel"=>"m")
+standard_names=Dict(
+    "time" => "time",
+    "station_x_coordinate" => "longitude",
+    "station_y_coordinate" => "latitude",
+    "waterlevel" => "sea_surface_height"
+)
+long_names=Dict(
+    "time" => "Time",
+    "station_x_coordinate" => "Station X Coordinate",
+    "station_y_coordinate" => "Station Y Coordinate",
+    "waterlevel" => "Sea level above geoid or Sea level above mean-sea-level"
+)
+units_dict=Dict(
+    "time" => "seconds since 2000-01-01 00:00:00",
+    "station_x_coordinate" => "degrees_east",
+    "station_y_coordinate" => "degrees_north",
+    "waterlevel"=>"m"
+)
 
-
-function write_to_netcdf(series, output_filename, standard_name="", long_name="")
-    # check if the file already exists
+function write_to_netcdf(
+    series::AbstractTimeSeries,
+    output_filename::String,
+)
     if isfile(output_filename)
         error("File $(output_filename) already exists. Please choose a different filename.")
     end
-    # global attributes
-    quantity=get_quantity(series)
-    source=get_source(series)
-    gatts = Dict("title"=>"Time series of $(quantity)",
-                 "institution"=>"Deltares",
-                 "source"=>"$(source)",
-                 "history"=>"Created by Julia : NetCDFTimeSeries.jl",
-                 "date_created"=>"$(Dates.now())",
-                 "conventions"=>"CF-1.5")
-    # create time dimension
-    times=get_times(series)
-    times_secs_since = [t.value for t in times.-DateTime(2000,1,1,0,0,0) ]/1000.0#robust_timedelta_sec(times,DateTime(2000,1,1))
-    time_atts = Dict("standard_name"=>"time","long_name"=>"time","units"=>"seconds since 2000-01-01 00:00:00")
-    time_dim = NcDim("time",times_secs_since,time_atts)
-    # create station dimension
-    station_names=get_names(series)
-    station_dim = NcDim("stations",length(station_names))
-    # create name_len dimension
-    name_len_dim = NcDim("name_len",NAME_LEN_MAX)
-    # create longitude variable
-    station_x_atts = Dict("units"=>"degrees_east","long_name"=>"station x coordinate","standard_name"=>"longitude")
-    station_x_var = NcVar("station_x_coordinate",[station_dim],atts=station_x_atts,t=Float64)
-    # create latitude variable
-    station_y_atts = Dict("units"=>"degrees_north","long_name"=>"station y coordinate","standard_name"=>"latitude")
-    station_y_var = NcVar("station_y_coordinate",[station_dim],atts=station_y_atts,t=Float64)
-    # create station name variable
-    name_atts = Dict("long_name"=>"station name","cf_role"=>"timeseries_id")
-    name_var = NcVar("station_name",[name_len_dim,station_dim],atts=name_atts,t=NC_CHAR)
-    # create "quantity" variable
-    standard_name=get(standard_names,quantity,"no_stdname_for_$(quantity)")
-    if ~haskey(standard_names,quantity)
-        println("Available long_names for: $(keys(standard_names))")
-    end
-    long_name=get(long_names,quantity,"No long_name for $(keys(standard_names))")
-    if ~haskey(long_names,quantity)
-        println("Available long_names for: $(keys(long_names))")
-    end
-    units=get(units_dict,quantity,"No units for $(quantity)")
-    if ~haskey(units_dict,quantity)
-        println("Available units for: $(keys(units_dict))")
-    end
-    variable_atts = Dict("standard_name"=>standard_name,
-                           "long_name"=>long_name,
-                           "units"=>"m",
-                           "coordinates"=>"station_x_coordinate station_y_coordinate station_name",
-                           "_FillValue"=>-999.0f0,
-                           "missing_value"=>NaN)
-    variable_var= NcVar(quantity,[station_dim,time_dim],atts=variable_atts, t=Float32) #t=Float32
 
-    # create netcdf file and write variables
-    NetCDF.create(output_filename, NcVar[variable_var,station_x_var,station_y_var,name_var],gatts=gatts,mode=NC_NETCDF4) do nc
-        variable_data = get_values(series)
-        NetCDF.putvar(nc, quantity, variable_data)
-        station_x = get_longitudes(series)
-        NetCDF.putvar(nc, "station_x_coordinate", station_x)
-        station_y = get_latitudes(series)
-        NetCDF.putvar(nc, "station_y_coordinate", station_y)
-        NetCDF.putvar(nc, "station_name", nc_string2char(station_names))
-    end
+    times = get_times(series)
+    times_sec_since = [t.value for t in times.-DateTime(2000,1,1,0,0,0) ]/1000.0 #robust_timedelta_sec(times,DateTime(2000,1,1))
+
+    quantity = get_quantity(series)
+
+    ds = NCDataset(output_filename, "c",
+        attrib=Dict(
+            "title"=>"Time series of $(quantity)",
+            "institution"=>"Deltares",
+            "source"=>"$(get_source(series))",
+            "history"=>"Created by Julia : NetCDFTimeSeries.jl",
+            "date_created"=>"$(Dates.now())",
+            "conventions"=>"CF-1.5"
+        )
+    )
+
+
+    defDim(ds, "time", length(times))
+    defDim(ds, "station", length(get_names(series)))
+
+    defVar(ds, "time", times_sec_since, ("time",), 
+        attrib=Dict(
+            "standard_name"=>standard_names["time"],
+            "long_name"=>long_names["time"],
+            "units"=>units_dict["time"]
+        )
+    )
+    defVar(ds, "station_name", get_names(series), ("station",),
+        attrib=Dict(
+            "long_name"=>"Station Name",
+            "cf_role"=>"timeseries_id"
+        )
+    )
+    defVar(ds, "station_x_coordinate", get_longitudes(series), ("station",),
+        attrib=Dict(
+            "standard_name"=>standard_names["station_x_coordinate"],
+            "long_name"=>long_names["station_x_coordinate"],
+            "units"=>units_dict["station_x_coordinate"]
+        )
+    )
+    defVar(ds, "station_y_coordinate", get_latitudes(series), ("station",),
+        attrib=Dict(
+            "standard_name"=>standard_names["station_y_coordinate"],
+            "long_name"=>long_names["station_y_coordinate"],
+            "units"=>units_dict["station_y_coordinate"]
+        )
+    )
+    defVar(ds, quantity, Float32.(get_values(series)), ("station", "time"),
+        attrib=Dict(
+            "standard_name"=>standard_names[quantity],
+            "long_name"=>long_names[quantity],
+            "units"=>units_dict[quantity],
+            "coordinates"=>"station_x_coordinate station_y_coordinate station_name",
+            "_FillValue"=>-999.0f0,
+            "missing_value"=>NaN
+        )
+    )
+
+    close(ds)
 end

@@ -1,6 +1,5 @@
 # test_series_netcdf.jl
 
-using NetCDF
 using Dates
 
 function test_netcdf_timeseries()
