@@ -2,15 +2,64 @@
 
 using Dates
 using NCDatasets
-const NAME_LEN_MAX = 256
+using NCDatasets.CommonDataModel: MFDataset
+
+const standard_names=Dict(
+    "time" => "time",
+    "station_x_coordinate" => "longitude",
+    "station_y_coordinate" => "latitude",
+    "waterlevel" => "sea_surface_height",
+    "u10" => "eastward_wind",
+    "v10" => "northward_wind",
+    "mslp" => "air_pressure_at_sea_level",
+    "surge" => "water_surface_elevation"
+    
+)
+const long_names=Dict(
+    "time" => "Time",
+    "station_x_coordinate" => "Station X Coordinate",
+    "station_y_coordinate" => "Station Y Coordinate",
+    "waterlevel" => "Sea level above geoid or Sea level above mean-sea-level",
+    "u10" => "10 m component of wind",
+    "v10" => "10 m component of wind",
+    "mslp" => "Air pressure at mean sea level",
+    "surge" => "Water level elevation driven by wind stress and atmospheric pressure"
+)
+const units_dict=Dict(
+    "time" => "seconds since 2000-01-01 00:00:00",
+    "station_x_coordinate" => "degrees_east",
+    "station_y_coordinate" => "degrees_north",
+    "waterlevel"=>"m",
+    "u10"=>"m/s",
+    "v10"=>"m/s",
+    "mslp"=>"Pa",
+    "surge" => "m"
+)
 
 # Define values structure for NetCDF time series
 # use lazy loading for the values
 struct NetCDFTimeSeries <: AbstractTimeSeries
-    nc::NCDataset
-    filename::String
+    nc::Union{NCDataset, MFDataset}
+    filename::Union{String, Vector{String}}
     quantity::String
     source::String
+end
+
+function _validate_nc_keys(nc::Union{NCDataset, MFDataset}, quantity::String)
+    required_keys = ["time", "station_x_coordinate", "station_y_coordinate", quantity]
+    for key in required_keys
+        if !haskey(nc, key)
+            error("Missing required key $(key) in NetCDF file.")
+        end
+    end
+
+    if !haskey(nc, "station_id") && !haskey(nc, "station_name")
+        error("Missing required key for station names in NetCDF file. Expected 'station_id' or 'station_name'.")
+    end
+    
+    if !haskey(standard_names, quantity)
+        @warn "Quantity $(quantity) not found in standard_names dictionary. Writing to NetCDF disabled due to CF-compliance."
+    end
 end
 
 # constructor for NetCDFTimeSeries from filename and quantity
@@ -35,7 +84,29 @@ function NetCDFTimeSeries(filename::String, quantity::String, source::String="")
     if length(source)==0
         source = "NetCDF file: $(filename)" 
     end
+    _validate_nc_keys(nc, quantity)
     return NetCDFTimeSeries(nc, filename, quantity, source)
+end
+
+# constructor for NetCDFTimeSeries from multiple filenames and quantity
+
+function NetCDFTimeSeries(filenames::Vector{String}, quantity::String, source::String="";
+    aggdim::Union{Nothing, String}=nothing, isnewdim::Bool=false)
+    if length(filenames) == 0
+        error("No filenames provided for NetCDFTimeSeries.")
+    end
+    nc = nothing
+    try
+        nc = NCDataset(filenames, aggdim=aggdim, isnewdim=isnewdim)
+    catch e
+        error("Failed to open NetCDF file $(filenames): $(e)")
+    end
+    if length(source)==0
+        source = "NetCDF files: $(join(filenames, ", "))" 
+    end
+    _validate_nc_keys(nc, quantity)
+    return NetCDFTimeSeries(nc, filenames, quantity, source)
+    
 end
 
 #
@@ -43,7 +114,8 @@ end
 #
 
 function get_values(ts::NetCDFTimeSeries)
-    # Throws an error if any missing values
+    # Throws an error if any missing values. Change to replace missing with _FillValue??
+    # Will also change type from Union{Missing, Float} to Float
     return NCDatasets.nomissing(ts.nc[ts.quantity][:,:]) # Read the values now for all stations and times
 end
     
@@ -64,15 +136,22 @@ function get_names(ts::NetCDFTimeSeries)
             end
         end
     end
-    error("No station name variable found in the NetCDF file. Expected one of: $(possible_names)")
 end
 
 function get_longitudes(ts::NetCDFTimeSeries)
-    return ts.nc["station_x_coordinate"][:,1] # Test file has time-dependent longitudes
+    if ndims(ts.nc["station_x_coordinate"]) == 2
+        return ts.nc["station_x_coordinate"][:,1] # Test file has time-dependent longitudes
+    else
+        return ts.nc["station_x_coordinate"][:] # Convert to array of floats
+    end
 end
 
 function get_latitudes(ts::NetCDFTimeSeries)
-    return ts.nc["station_y_coordinate"][:,1] # Test file has time-dependent latitudes
+    if ndims(ts.nc["station_y_coordinate"]) == 2
+        return ts.nc["station_y_coordinate"][:,1] # Test file has time-dependent latitudes
+    else
+        return ts.nc["station_y_coordinate"][:] # Convert to array of floats
+    end
 end
 
 function get_quantity(ts::NetCDFTimeSeries)
@@ -150,27 +229,6 @@ end
 #
 # test_netcdf_writer
 #
-standard_names=Dict(
-    "time" => "time",
-    "station_x_coordinate" => "longitude",
-    "station_y_coordinate" => "latitude",
-    "waterlevel" => "sea_surface_height",
-    "surge" => "water_surface_elevation"
-)
-long_names=Dict(
-    "time" => "Time",
-    "station_x_coordinate" => "Station X Coordinate",
-    "station_y_coordinate" => "Station Y Coordinate",
-    "waterlevel" => "Sea level above geoid or Sea level above mean-sea-level",
-    "surge" => "Water level elevation driven by wind stress and atmospheric pressure"
-)
-units_dict=Dict(
-    "time" => "seconds since 2000-01-01 00:00:00",
-    "station_x_coordinate" => "degrees_east",
-    "station_y_coordinate" => "degrees_north",
-    "waterlevel"=>"m",
-    "surge" => "m"
-)
 
 function write_to_netcdf(
     series::AbstractTimeSeries,
@@ -184,6 +242,10 @@ function write_to_netcdf(
     times_sec_since = [t.value for t in times.-DateTime(2000,1,1,0,0,0) ]/1000.0 #robust_timedelta_sec(times,DateTime(2000,1,1))
 
     quantity = get_quantity(series)
+
+    if !haskey(standard_names, quantity)
+        error("Quantity $(quantity) not found in standard_names dictionary. Writing to NetCDF disabled due to CF-compliance.")
+    end
 
     ds = NCDataset(output_filename, "c",
         attrib=Dict(
