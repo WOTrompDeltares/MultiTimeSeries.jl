@@ -154,19 +154,22 @@ standard_names=Dict(
     "time" => "time",
     "station_x_coordinate" => "longitude",
     "station_y_coordinate" => "latitude",
-    "waterlevel" => "sea_surface_height"
+    "waterlevel" => "sea_surface_height",
+    "surge" => "water_surface_elevation"
 )
 long_names=Dict(
     "time" => "Time",
     "station_x_coordinate" => "Station X Coordinate",
     "station_y_coordinate" => "Station Y Coordinate",
-    "waterlevel" => "Sea level above geoid or Sea level above mean-sea-level"
+    "waterlevel" => "Sea level above geoid or Sea level above mean-sea-level",
+    "surge" => "Water level elevation driven by wind stress and atmospheric pressure"
 )
 units_dict=Dict(
     "time" => "seconds since 2000-01-01 00:00:00",
     "station_x_coordinate" => "degrees_east",
     "station_y_coordinate" => "degrees_north",
-    "waterlevel"=>"m"
+    "waterlevel"=>"m",
+    "surge" => "m"
 )
 
 function write_to_netcdf(
